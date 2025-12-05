@@ -296,7 +296,7 @@ def sign_in_account(user, pwd, debug=False, headless=False):
     try:
         logger.info(f"开始处理账户: {user}")
         if not debug:
-            time.sleep(random.randint(300, 330))
+            time.sleep(random.randint(5,10))
         
         logger.info("初始化 ddddocr")
         ocr = ddddocr.DdddOcr(ocr=True, show_ad=False)
@@ -479,6 +479,7 @@ if __name__ == "__main__":
         result = sign_in_account(user, pwd, debug=debug, headless=headless)
         results.append(result)
         logger.info(f"=== 第 {i} 个账户处理完成 ===\n")
+        time.sleep(300)
 
     
     

@@ -295,7 +295,6 @@ def sign_in_account(user, pwd, debug=False, headless=False):
     
     try:
         logger.info(f"开始处理账户: {user}")
-        
         if not debug:
             time.sleep(random.randint(600, 603))
         

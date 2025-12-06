@@ -479,7 +479,7 @@ if __name__ == "__main__":
         result = sign_in_account(user, pwd, debug=debug, headless=headless)
         results.append(result)
         logger.info(f"=== 第 {i} 个账户处理完成 ===\n")
-        time.sleep(300)
+        time.sleep(60)
 
     
     

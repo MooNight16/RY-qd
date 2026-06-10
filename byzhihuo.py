@@ -83,17 +83,14 @@ def slide_verify(driver, wait):
         wait.until(EC.presence_of_element_located((By.XPATH, '//canvas[@class="slider-bg"]')))
         time.sleep(1)
 
-        # 截图识别滑块
         bg_img = driver.find_element(By.XPATH, '//canvas[@class="slider-bg"]').screenshot_as_png
         slide_img = driver.find_element(By.XPATH, '//img[@class="slider-block"]').screenshot_as_png
 
-        # ddddocr 识别偏移
         ocr = ddddocr.DdddOcr(det=False, ocr=False)
         res = ocr.slide_match(slide_img, bg_img, simple_target=True)
         offset = res["target"]
         logger.info(f"滑块识别偏移量: {offset}")
 
-        # 模拟真人滑动
         slider = driver.find_element(By.CLASS_NAME, "slider-handle")
         action = ActionChains(driver)
         action.click_and_hold(slider).pause(0.3)
@@ -101,7 +98,6 @@ def slide_verify(driver, wait):
         action.move_by_offset(6, 0).pause(0.6)
         action.release().perform()
 
-        # 滑块后固定等待8秒（你的要求）
         logger.info("滑块验证完成，等待8秒...")
         time.sleep(8)
         return True
@@ -125,15 +121,12 @@ def sign_in_byzh(user, pwd, debug=False, headless=False):
         if not debug:
             time.sleep(random.randint(3, 8))
 
-        # 初始化浏览器
         driver = init_selenium(debug=debug, headless=headless)
         wait = WebDriverWait(driver, timeout)
 
-        # 1. 打开登录页
-        driver.get(LOGIN)
+        driver.get(LOGIN_URL)
         time.sleep(3)
 
-        # 2. 填写账号密码
         username_input = wait.until(EC.visibility_of_element_located((By.NAME, "username")))
         pwd_input = wait.until(EC.visibility_of_element_located((By.NAME, "password")))
         username_input.clear()
@@ -141,39 +134,31 @@ def sign_in_byzh(user, pwd, debug=False, headless=False):
         pwd_input.clear()
         pwd_input.send_keys(pwd)
 
-        # 3. 提交登录
         submit_btn = wait.until(EC.element_to_be_clickable((By.XPATH, '//button[@type="submit"]')))
         driver.execute_script("arguments[0].click();", submit_btn)
         time.sleep(2)
 
-        # 4. 处理登录滑块
         slide_verify(driver, wait)
 
-        # 校验是否变为游客（跳search页面=登录失败）
         time.sleep(6)
         current_url = driver.current_url
         if "search.php" in current_url or "member.php?mod=logging" in current_url:
             return False, user, "登录失败，跳转游客页面/未退出登录页"
         logger.info("账号登录成功")
 
-        # 5. 登录后等待3秒 再跳转签到页（你的要求）
         logger.info("登录成功，等待3秒跳转签到页...")
         time.sleep(3)
         driver.get(SIGN_URL)
         time.sleep(3)
 
-        # 6. 执行签到
         try:
             sign_btn = wait.until(EC.element_to_be_clickable((By.XPATH, '//button[contains(text(),"签到")]')))
             driver.execute_script("arguments[0].click();", sign_btn)
             time.sleep(2)
-            # 签到滑块
             slide_verify(driver, wait)
         except TimeoutException:
-            # 无签到按钮 = 今日已签
             logger.info("检测到今日已完成签到")
 
-        # 7. 签到结果校验 & 日志
         page_text = driver.page_source
         if "签到成功" in page_text or "连续签到" in page_text:
             logger.info("【日志】✅ 签到成功")
@@ -198,14 +183,12 @@ def sign_in_byzh(user, pwd, debug=False, headless=False):
 
 # ===================== 程序入口（同雨云代码风格） =====================
 if __name__ == "__main__":
-    # 环境判断
     is_github_actions = os.environ.get("GITHUB_ACTIONS", "false") == "true"
     debug = os.environ.get('DEBUG', 'false').lower() == 'true'
-    headless = os.environ.get('HEADLESS', 'false').lower()
+    headless = os.environ.get('HEADLESS', 'false').lower() == 'true'
     if is_github_actions:
         headless = True
 
-    # 日志初始化
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
     logger = logging.getLogger(__name__)
 
@@ -214,11 +197,11 @@ if __name__ == "__main__":
     logger.info(f"不移之火 自动签到工作流 v{ver}")
     logger.info("------------------------------------------------------------------")
 
-    # 读取 GitHub 环境变量 多账号
     users_env = os.environ.get("BYZHIHUO_USER", "")
     passwords_env = os.environ.get("BYZHIHUO_PASS", "")
+    
     users = [u.strip() for u in users_env.split('\n') if u.strip()]
-    passwords = [p.strip() for p in passwords_env.split('\n') if u.strip()]
+    passwords = [p.strip() for p in passwords_env.split('\n') if p.strip()]
 
     accounts = []
     if len(users) == len(passwords) and len(users) > 0:
@@ -228,7 +211,6 @@ if __name__ == "__main__":
         logger.error("未配置账号密码或账号密码数量不匹配")
         exit(1)
 
-    # 批量执行账号
     results = []
     for idx, (user, pwd) in enumerate(accounts, 1):
         logger.info(f"\n=== 开始处理第 {idx} 个账号: {user} ===")
@@ -237,7 +219,6 @@ if __name__ == "__main__":
         logger.info(f"=== 第 {idx} 个账号处理完成 ===\n")
         time.sleep(40)
 
-    # 统计结果 + 推送通知（复用原有notify）
     success_count = sum(1 for r in results if r[0])
     total_count = len(results)
 
@@ -255,7 +236,6 @@ if __name__ == "__main__":
         else:
             content += f"{i}. ❌ {user} : {msg}\n"
 
-    # 发送通知
     try:
         send(title, content)
         logger.info("通知推送成功")

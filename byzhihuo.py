@@ -1,35 +1,40 @@
+"""
+不移之火论坛自动签到脚本
+支持多用户、GitHub Actions定时运行
+"""
+
+import logging
 import os
 import random
 import time
-from selenium.common import TimeoutException
+
+from selenium import webdriver
 from selenium.webdriver import ActionChains
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.wait import WebDriverWait
-import ddddocr
-import logging
 
-# ===================== 复用原有公共导入 & 兼容代码 =====================
 try:
     from dotenv import load_dotenv
     load_dotenv()
 except Exception:
     pass
 
+# --- webdriver_manager 导入 ---
 try:
     from webdriver_manager.chrome import ChromeDriverManager
     try:
         from webdriver_manager.core.utils import ChromeType
     except ImportError:
-        try:
-            from webdriver_manager.chrome import ChromeType
-        except ImportError:
-            ChromeType = None
+        ChromeType = None
 except ImportError:
     print("webdriver_manager未安装，将使用备用方式")
     ChromeDriverManager = None
     ChromeType = None
 
+# --- notify 通知模块导入 ---
 try:
     from notify import send
     print("已加载通知模块 (notify.py)")
@@ -38,21 +43,43 @@ except ImportError:
     def send(*args, **kwargs):
         pass
 
-# ===================== 复用原有 Selenium 初始化函数（完全不动） =====================
-def init_selenium(debug=False, headless=False):
-    from selenium import webdriver
-    from selenium.webdriver.chrome.service import Service
-    ops = webdriver.ChromeOptions()
-    if headless or os.environ.get("GITHUB_ACTIONS", "false") == "true":
+# --- 配置 ---
+LOGIN_URL = "https://www.byzhihuo.com/member.php?mod=logging&action=login&referer="
+SIGN_URL = "https://www.byzhihuo.com/plugin.php?id=k_misign:sign"
+
+# GitHub Actions环境检测
+IS_GITHUB_ACTIONS = os.environ.get("GITHUB_ACTIONS", "false") == "true"
+
+# 调试模式
+DEBUG = os.environ.get('DEBUG', 'false').lower() == 'true'
+HEADLESS = os.environ.get('HEADLESS', 'false').lower() == 'true'
+if IS_GITHUB_ACTIONS:
+    HEADLESS = True
+
+
+def init_driver():
+    """初始化Chrome驱动"""
+    ops = Options()
+
+    # GitHub Actions 或 headless 模式
+    if HEADLESS or IS_GITHUB_ACTIONS:
         for option in ['--headless', '--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu']:
             ops.add_argument(option)
+
     ops.add_argument('--window-size=1920,1080')
     ops.add_argument('--disable-blink-features=AutomationControlled')
     ops.add_argument('--no-proxy-server')
     ops.add_argument('--lang=zh-CN')
 
-    is_github_actions = os.environ.get("GITHUB_ACTIONS", "false") == "true"
-    if debug and not is_github_actions:
+    # 设置真实的User-Agent
+    ops.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36")
+
+    # 禁用自动化标志
+    ops.add_experimental_option("excludeSwitches", ["enable-automation"])
+    ops.add_experimental_option("useAutomationExtension", False)
+
+    # 非调试模式时分离浏览器
+    if DEBUG and not IS_GITHUB_ACTIONS:
         ops.add_experimental_option("detach", True)
 
     try:
@@ -66,8 +93,9 @@ def init_selenium(debug=False, headless=False):
             driver = webdriver.Chrome(service=service, options=ops)
             return driver
     except Exception as e:
-        print(f"webdriver-manager失败: {e}")
+        logger.error(f"webdriver-manager失败: {e}")
 
+    # 备用方案：直接使用系统Chrome
     try:
         driver = webdriver.Chrome(options=ops)
         return driver
@@ -76,104 +104,213 @@ def init_selenium(debug=False, headless=False):
 
     raise Exception("无法初始化Selenium WebDriver")
 
-# ===================== 不移之火 专属滑块函数 =====================
-def slide_verify(driver, wait):
-    """处理登录/签到滑块，滑块完成后等待8秒"""
+
+def apply_stealth(driver):
+    """应用反检测脚本"""
     try:
-        wait.until(EC.presence_of_element_located((By.XPATH, '//canvas[@class="slider-bg"]')))
+        with open("stealth.min.js", mode="r") as f:
+            js = f.read()
+        driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {"source": js})
+    except Exception:
+        # 如果没有stealth.min.js，使用内置脚本
+        driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+            "source": """
+                Object.defineProperty(navigator, 'webdriver', {
+                    get: () => undefined
+                });
+                Object.defineProperty(navigator, 'plugins', {
+                    get: () => [1, 2, 3, 4, 5]
+                });
+                Object.defineProperty(navigator, 'languages', {
+                    get: () => ['zh-CN', 'zh', 'en']
+                });
+                window.chrome = { runtime: {} };
+            """
+        })
+
+
+def login(driver, username, password):
+    """登录论坛"""
+    logger.info(f"正在登录用户: {username}")
+    driver.get(LOGIN_URL)
+    time.sleep(5)
+
+    try:
+        # 等待页面加载
+        WebDriverWait(driver, 15).until(
+            EC.presence_of_element_located((By.NAME, "username"))
+        )
+        time.sleep(5)
+
+        # 输入用户名
+        logger.info("输入用户名...")
+        driver.find_element(By.NAME, "username").clear()
+        driver.find_element(By.NAME, "username").send_keys(username)
         time.sleep(1)
 
-        bg_img = driver.find_element(By.XPATH, '//canvas[@class="slider-bg"]').screenshot_as_png
-        slide_img = driver.find_element(By.XPATH, '//img[@class="slider-block"]').screenshot_as_png
+        # 输入密码
+        logger.info("输入密码...")
+        driver.find_element(By.NAME, "password").clear()
+        driver.find_element(By.NAME, "password").send_keys(password)
+        time.sleep(1)
 
-        ocr = ddddocr.DdddOcr(det=False, ocr=False)
-        res = ocr.slide_match(slide_img, bg_img, simple_target=True)
-        offset = res["target"]
-        logger.info(f"滑块识别偏移量: {offset}")
+        # 点击登录按钮
+        logger.info("点击登录按钮...")
+        login_btn = driver.find_element(By.CSS_SELECTOR, "button.pnc")
+        login_btn.click()
 
-        slider = driver.find_element(By.CLASS_NAME, "slider-handle")
-        action = ActionChains(driver)
-        action.click_and_hold(slider).pause(0.3)
-        action.move_by_offset(offset - 6, 0).pause(0.25)
-        action.move_by_offset(6, 0).pause(0.6)
-        action.release().perform()
-
-        logger.info("滑块验证完成，等待8秒...")
+        # 等待登录完成
         time.sleep(8)
-        return True
-    except TimeoutException:
-        logger.info("当前无滑块验证")
-        return True
+
+        # 检查是否登录成功
+        if "游客" not in driver.page_source:
+            logger.info(f"用户 {username} 登录成功")
+            return True
+        else:
+            logger.warning(f"用户 {username} 登录可能失败，仍为游客状态")
+            return False
+
     except Exception as e:
-        logger.error(f"滑块验证异常: {str(e)}")
+        logger.error(f"登录异常: {e}")
         return False
 
-# ===================== 单账号签到主逻辑 =====================
-def sign_in_byzh(user, pwd, debug=False, headless=False):
-    """不移之火 账号登录+签到"""
-    driver = None
-    timeout = 15
-    LOGIN_URL = "https://www.byzhihuo.com/member.php?mod=logging&action=login"
-    SIGN_URL = "https://www.byzhihuo.com/plugin.php?id=k_misign:sign"
+
+def solve_slider(driver):
+    """处理滑块验证"""
+    logger.info("检测到滑块验证，正在处理...")
+    time.sleep(5)
 
     try:
-        logger.info(f"开始处理账号: {user}")
-        if not debug:
-            time.sleep(random.randint(3, 8))
+        # 等待滑块元素出现
+        slider = WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.CLASS_NAME, "nc_iconfont.btn_slide"))
+        )
 
-        driver = init_selenium(debug=debug, headless=headless)
-        wait = WebDriverWait(driver, timeout)
+        # 获取背景宽度
+        bg_element = driver.find_element(By.CLASS_NAME, "nc_bg")
+        bg_size = bg_element.size
+        logger.info(f"滑块背景宽度: {bg_size['width']}")
 
-        driver.get(LOGIN_URL)
-        time.sleep(3)
+        # 计算滑动距离
+        distance = random.randint(80, 180)
 
-        username_input = wait.until(EC.visibility_of_element_located((By.NAME, "username")))
-        pwd_input = wait.until(EC.visibility_of_element_located((By.NAME, "password")))
-        username_input.clear()
-        username_input.send_keys(user)
-        pwd_input.clear()
-        pwd_input.send_keys(pwd)
+        # 执行滑动操作
+        action = ActionChains(driver)
+        action.click_and_hold(slider)
+        action.move_by_offset(distance, 0)
+        action.release()
+        action.perform()
 
-        submit_btn = wait.until(EC.element_to_be_clickable((By.XPATH, '//button[@type="submit"]')))
-        driver.execute_script("arguments[0].click();", submit_btn)
         time.sleep(2)
-
-        slide_verify(driver, wait)
-
-        time.sleep(6)
-        current_url = driver.current_url
-        if "search.php" in current_url or "member.php?mod=logging" in current_url:
-            return False, user, "登录失败，跳转游客页面/未退出登录页"
-        logger.info("账号登录成功")
-
-        logger.info("登录成功，等待3秒跳转签到页...")
-        time.sleep(3)
-        driver.get(SIGN_URL)
-        time.sleep(3)
-
-        try:
-            sign_btn = wait.until(EC.element_to_be_clickable((By.XPATH, '//button[contains(text(),"签到")]')))
-            driver.execute_script("arguments[0].click();", sign_btn)
-            time.sleep(2)
-            slide_verify(driver, wait)
-        except TimeoutException:
-            logger.info("检测到今日已完成签到")
-
-        page_text = driver.page_source
-        if "签到成功" in page_text or "连续签到" in page_text:
-            logger.info("【日志】✅ 签到成功")
-            return True, user, "签到成功"
-        elif "今天已经签到" in page_text or "今日已签到" in page_text:
-            logger.info("【日志】✅ 今日已签到")
-            return True, user, "今日已签到"
-        else:
-            logger.warning("【日志】⚠️ 操作完成，未识别签到状态")
-            return True, user, "操作完成，状态未知"
+        logger.info("滑块验证已尝试")
+        return True
 
     except Exception as e:
-        err_msg = f"运行异常: {str(e)}"
-        logger.error(err_msg, exc_info=True)
-        return False, user, err_msg
+        logger.error(f"滑块验证处理异常: {e}")
+        return False
+
+
+def check_signed(driver):
+    """检查是否已签到"""
+    try:
+        visited = driver.find_element(By.CSS_SELECTOR, "span.btnvisted")
+        if visited:
+            return True
+    except:
+        pass
+    return False
+
+
+def sign_in(driver):
+    """签到"""
+    logger.info("正在打开签到页面...")
+    driver.get(SIGN_URL)
+    time.sleep(5)
+
+    # 检查是否已签到
+    if check_signed(driver):
+        logger.info("今日已签到，无需重复签到")
+        return True, "已签到"
+
+    # 检查是否需要滑块验证
+    try:
+        slider_check = driver.find_elements(By.CLASS_NAME, "nc_wrapper")
+        if slider_check:
+            logger.info("检测到滑块验证...")
+            solve_slider(driver)
+            time.sleep(5)
+
+            # 再次检查是否已签到
+            if check_signed(driver):
+                logger.info("滑块验证后签到成功")
+                return True, "签到成功"
+    except:
+        pass
+
+    # 尝试点击签到按钮
+    try:
+        jd_sign_btn = driver.find_element(By.ID, "JD_sign")
+        if jd_sign_btn and jd_sign_btn.is_displayed():
+            logger.info("找到JD_sign签到按钮，点击...")
+            jd_sign_btn.click()
+            time.sleep(5)
+
+            # 检查签到结果
+            if check_signed(driver):
+                logger.info("签到成功！")
+                return True, "签到成功"
+    except:
+        pass
+
+    # 尝试查找其他签到按钮
+    try:
+        buttons = driver.find_elements(By.TAG_NAME, "button")
+        for btn in buttons:
+            if "签" in btn.text and "已" not in btn.text:
+                if btn.is_displayed():
+                    logger.info(f"找到签到按钮: {btn.text}")
+                    btn.click()
+                    time.sleep(5)
+
+                    if check_signed(driver):
+                        logger.info("签到成功！")
+                        return True, "签到成功"
+    except:
+        pass
+
+    logger.warning("未能找到签到按钮，可能已签到或页面结构不同")
+    return False, "未找到签到按钮"
+
+
+def sign_in_account(username, password):
+    """执行单个账户的签到"""
+    driver = None
+
+    try:
+        logger.info(f"========== 开始处理账户: {username} ==========")
+
+        if not DEBUG:
+            time.sleep(random.randint(5, 10))
+
+        logger.info("初始化浏览器驱动...")
+        driver = init_driver()
+        apply_stealth(driver)
+
+        # 登录
+        if not login(driver, username, password):
+            return False, username, "登录失败", "登录失败"
+
+        # 签到
+        success, message = sign_in(driver)
+        logger.info(f"账户 {username} 签到结果: {message}")
+
+        logger.info(f"========== 账户 {username} 处理完成 ==========\n")
+        return success, username, message, None
+
+    except Exception as e:
+        logger.error(f"异常: {e}", exc_info=True)
+        return False, username, None, str(e)
+
     finally:
         if driver:
             try:
@@ -181,63 +318,94 @@ def sign_in_byzh(user, pwd, debug=False, headless=False):
             except:
                 pass
 
-# ===================== 程序入口（同雨云代码风格） =====================
-if __name__ == "__main__":
-    is_github_actions = os.environ.get("GITHUB_ACTIONS", "false") == "true"
-    debug = os.environ.get('DEBUG', 'false').lower() == 'true'
-    headless = os.environ.get('HEADLESS', 'false').lower() == 'true'
-    if is_github_actions:
-        headless = True
 
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+def main():
+    """主函数"""
+    global logger
+
+    # 设置日志
+    log_level = logging.DEBUG if DEBUG else logging.INFO
+    logging.basicConfig(
+        level=log_level,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.StreamHandler(),
+            logging.FileHandler('signin.log', encoding='utf-8')
+        ]
+    )
     logger = logging.getLogger(__name__)
 
-    ver = "1.0"
-    logger.info("------------------------------------------------------------------")
-    logger.info(f"不移之火 自动签到工作流 v{ver}")
-    logger.info("------------------------------------------------------------------")
+    logger.info("=" * 60)
+    logger.info("不移之火论坛自动签到脚本")
+    logger.info("=" * 60)
 
-    users_env = os.environ.get("BYZHIHUO_USER", "")
-    passwords_env = os.environ.get("BYZHIHUO_PASS", "")
-    
-    users = [u.strip() for u in users_env.split('\n') if u.strip()]
-    passwords = [p.strip() for p in passwords_env.split('\n') if p.strip()]
-
+    # 读取多用户配置
     accounts = []
+    users_env = os.environ.get("BYZHIUO_USER", "")
+    passwords_env = os.environ.get("BYZHIUO_PASS", "")
+
+    users = [user.strip() for user in users_env.split('\n') if user.strip()]
+    passwords = [pwd.strip() for pwd in passwords_env.split('\n') if pwd.strip()]
+
     if len(users) == len(passwords) and len(users) > 0:
-        for u, p in zip(users, passwords):
-            accounts.append((u, p))
+        for user, pwd in zip(users, passwords):
+            accounts.append((user, pwd))
+        logger.info(f"加载了 {len(accounts)} 个账户")
     else:
-        logger.error("未配置账号密码或账号密码数量不匹配")
+        logger.error("未找到有效账户配置或数量不匹配")
+        logger.info("请设置环境变量 BYZHIUO_USER 和 BYZHIUO_PASS（多用户用换行分隔）")
         exit(1)
 
+    # 逐个账户执行签到
     results = []
-    for idx, (user, pwd) in enumerate(accounts, 1):
-        logger.info(f"\n=== 开始处理第 {idx} 个账号: {user} ===")
-        res = sign_in_byzh(user, pwd, debug=debug, headless=headless)
-        results.append(res)
-        logger.info(f"=== 第 {idx} 个账号处理完成 ===\n")
-        time.sleep(40)
+    for i, (username, password) in enumerate(accounts, 1):
+        logger.info(f"\n>>> 开始处理第 {i}/{len(accounts)} 个账户: {username}")
+        result = sign_in_account(username, password)
+        results.append(result)
+        logger.info(f">>> 第 {i}/{len(accounts)} 个账户处理完成")
 
+        # 账户间等待，避免频繁请求
+        if i < len(accounts):
+            wait_time = random.randint(30, 60)
+            logger.info(f"等待 {wait_time} 秒后处理下一个账户...")
+            time.sleep(wait_time)
+
+    # 生成统计结果
     success_count = sum(1 for r in results if r[0])
     total_count = len(results)
 
-    if success_count == total_count:
-        title = "✅ 不移之火自动签到 - 全部成功"
-    elif success_count > 0:
-        title = f"⚠️ 不移之火自动签到 - 部分成功({success_count}/{total_count})"
-    else:
-        title = "❌ 不移之火自动签到 - 全部失败"
+    logger.info("\n" + "=" * 60)
+    logger.info("签到结果汇总")
+    logger.info("=" * 60)
+    for success, username, message, error in results:
+        status = "✅ 成功" if success else "❌ 失败"
+        detail = message or error or "未知"
+        logger.info(f"{status} - {username} - {detail}")
+    logger.info("=" * 60)
+    logger.info(f"总计: {success_count}/{total_count} 成功")
 
-    content = f"不移之火签到汇总\n总账号: {total_count}\n成功: {success_count}\n失败: {total_count - success_count}\n\n详细记录:\n"
-    for i, (ok, user, msg) in enumerate(results, 1):
-        if ok:
-            content += f"{i}. ✅ {user} : {msg}\n"
-        else:
-            content += f"{i}. ❌ {user} : {msg}\n"
+    # 发送通知
+    if success_count == total_count:
+        notification_title = f"✅ 不移之火签到完成 - 全部成功 ({success_count}/{total_count})"
+    elif success_count > 0:
+        notification_title = f"⚠️ 不移之火签到完成 - 部分成功 ({success_count}/{total_count})"
+    else:
+        notification_title = f"❌ 不移之火签到完成 - 全部失败"
+
+    notification_content = "\n".join([
+        f"{'✅' if r[0] else '❌'} {r[1]}: {r[2] or r[3]}"
+        for r in results
+    ])
 
     try:
-        send(title, content)
-        logger.info("通知推送成功")
+        send(notification_title, notification_content)
+        logger.info("通知已发送")
     except Exception as e:
-        logger.error(f"通知推送失败: {str(e)}")
+        logger.warning(f"发送通知失败: {e}")
+
+    logger.info("脚本执行完毕")
+
+
+if __name__ == "__main__":
+    logger = None
+    main()

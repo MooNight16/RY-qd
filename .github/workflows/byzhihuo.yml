@@ -1,39 +1,48 @@
-name: 不移之火每日签到
+name: 不移之火论坛自动签到
 
 on:
-  workflow_dispatch:  # 支持手动触发
   schedule:
-    # 每日 北京时间 08:00 执行 (UTC 00:00)
+    # 北京时间每天早上8点执行
     - cron: '0 0 * * *'
+  workflow_dispatch:  # 支持手动触发
 
 jobs:
-  sign:
+  signin:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
+
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
 
-      - name: 配置 Python
+      - name: 设置Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: '3.11'
 
-      - name: 安装系统依赖(Chrome)
+      - name: 安装Chrome
         run: |
-          sudo apt-get update
-          sudo apt-get install -y chromium-browser chromium-chromedriver
+          wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | apt-key add -
+          echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list
+          apt-get update -qq
+          apt-get install -y -qq google-chrome-stable
 
-      - name: 安装Python依赖
+      - name: 安装依赖
         run: |
-          python -m pip install --upgrade pip
-          pip install selenium webdriver-manager ddddocr python-dotenv opencv-python requests
+          pip install -q selenium webdriver-manager ddddocr python-dotenv notify
 
-      - name: 执行签到脚本
+      - name: 运行签到脚本
         env:
+          BYZHIUO_USER: ${{ secrets.BYZHIUO_USER }}
+          BYZHIUO_PASS: ${{ secrets.BYZHIUO_PASS }}
           GITHUB_ACTIONS: true
-          DEBUG: false
-          HEADLESS: true
-          # 读取仓库密钥
-          BYZHIHUO_USER: ${{ secrets.BYZHIHUO_USER }}
-          BYZHIHUO_PASS: ${{ secrets.BYZHIHUO_PASS }}
-        run: python byzhihuo.py
+        run: |
+          python byzhihuo_signin.py
+
+      - name: 上传日志
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: signin-logs
+          path: signin.log
+          retention-days: 7

@@ -1,38 +1,45 @@
-name: 不移之火论坛自动签到
+name: 不移之火自动签到
 
 on:
   schedule:
-    # 每天 UTC 2:00 执行（北京时间 10:00）
-    - cron: '0 2 * * *'
-  workflow_dispatch: # 支持手动触发
+    - cron: '10 16 * * *'   # 北京时间 00:10
+    - cron: '10 0 * * *'    # 北京时间 08:10
+  workflow_dispatch:
+  push:
+    branches: [ main ]
 
 jobs:
-  sign:
+  sign-in:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    
+    timeout-minutes: 15
+
     steps:
-      - name: Checkout
+      - name: 检出代码
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: 设置 Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Install Chrome
-        uses: browser-actions/setup-chrome@v1
-        with:
-          chrome-version: stable
-
-      - name: Install dependencies
+      - name: 安装依赖
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run sign in
+      - name: 运行签到脚本
         env:
-          ACCOUNTS: ${{ secrets.ACCOUNTS }}
-          GITHUB_ACTIONS: "true"
-          HEADLESS: "true"
-        run: python tesss.py
+          BYZH_ACCOUNTS: ${{ secrets.BYZH_ACCOUNTS }}
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+        run: |
+          python byzhsign.py
+
+      - name: 上传运行日志
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-logs
+          path: |
+            temp/
+            *.log
+          if-no-files-found: ignore

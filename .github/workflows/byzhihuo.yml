@@ -2,8 +2,7 @@ name: 不移之火自动签到
 
 on:
   schedule:
-    - cron: '10 16 * * *'   # 北京时间 00:10
-    - cron: '10 0 * * *'    # 北京时间 08:10
+      - cron: '10 0 * * *'    # 北京时间 08:10
   workflow_dispatch:
   push:
     branches: [ main ]

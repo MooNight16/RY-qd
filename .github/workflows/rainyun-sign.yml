@@ -8,6 +8,8 @@ on:
 jobs:
   sign-in:
     runs-on: ubuntu-latest
+    env:
+      TZ: Asia/Shanghai      # 新增这一行，设置容器系统时区为东八区北京时间
     steps:
       - uses: actions/checkout@v3
       

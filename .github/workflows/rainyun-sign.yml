@@ -1,3 +1,7 @@
+name: Delete system chromedriver
+   run: sudo rm /usr/bin/chromedriver
+name: Run script
+      run: python rainyun.py
 name: Rainyun 自动签到
 
 on:
